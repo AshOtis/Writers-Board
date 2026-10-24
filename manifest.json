@@ -1,7 +1,7 @@
 {
   "id": "writers-board",
   "name": "Writers Board",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "minAppVersion": "1.5.0",
   "description": "A daily writing box with a target that grows as you do, a forgiving streak, and achievements that unlock rest days, titles and looks.",
   "author": "AshOtis",

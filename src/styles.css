@@ -77,10 +77,23 @@
 .wb-heat i.is-future { background: none; }
 .wb-heatcard { display: flex; flex-direction: column; }
 .wb-writecard { display: flex; flex-direction: column; }
-.wb-writecard textarea.wb-box { flex: 1 1 auto; }
+.wb-writecard .wb-page { flex: 1 1 auto; }
 .wb-heatcard .wb-heat { flex: 1; }
 
 .wb-streak { display: flex; align-items: center; gap: 14px; }
+/* today's finished writing: read-only, with "Write more" opening a fresh box under it */
+.wb-page { display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; min-height: 240px; }
+.wb-page textarea.wb-box { flex: 1 1 auto; }
+.wb-done { flex: 1 1 auto; border: 1px solid var(--background-modifier-border); border-radius: 12px; padding: 14px 18px; background: color-mix(in srgb, var(--background-primary) 45%, transparent); overflow-y: auto; max-height: 520px; }
+.wb-done.is-more { flex: 0 1 auto; max-height: 180px; opacity: .75; }
+.wb-done-h { font-size: var(--font-ui-smaller); color: var(--wb-ok, var(--text-success)); margin-bottom: 8px; }
+.wb-done-t { white-space: pre-wrap; font-family: var(--font-text); font-size: 1.1em; line-height: 1.75; color: var(--text-muted); user-select: text; }
+/* Lantern Focus running: only Today's writing stays in focus */
+.wb-stats, .wb-grid > .wb-col + .wb-col { transition: opacity 1.2s ease; }
+body.lantern-focus-on .wb-fade-lantern .wb-stats, body.lantern-focus-on .wb-fade-lantern .wb-grid > .wb-col + .wb-col,
+body.lantern-calm .wb-fade-lantern .wb-stats, body.lantern-calm .wb-fade-lantern .wb-grid > .wb-col + .wb-col { opacity: .08; }
+body.lantern-focus-on .wb-fade-lantern .wb-stats:hover, body.lantern-focus-on .wb-fade-lantern .wb-grid > .wb-col + .wb-col:hover,
+body.lantern-calm .wb-fade-lantern .wb-stats:hover, body.lantern-calm .wb-fade-lantern .wb-grid > .wb-col + .wb-col:hover { opacity: 1; transition: opacity .25s ease; }
 .wb-big { font-size: 2.2em; font-weight: 700; color: var(--text-accent); line-height: 1; }
 .wb-rest { display: flex; gap: 4px; margin-top: 6px; }
 .wb-rest i { width: 14px; height: 14px; border-radius: 4px; border: 1px solid color-mix(in srgb, var(--wb-ok) 55%, transparent); background: color-mix(in srgb, var(--wb-ok) 22%, transparent); }

@@ -5,11 +5,11 @@ const WB_VIEW = 'writers-board';
 const WB_SET = {
   name: '', title: '', useCore: true, folder: '', format: '', template: '', subfolders: true,
   counts: 'note', heading: 'Writing', startTarget: 100, step: 50, maxTarget: 1000,
-  ring: 'default', bg: 'none', bgGlow: 35, bgDim: 50, banners: true, sound: true, openOnStart: false
+  ring: 'default', bg: 'none', bgGlow: 35, bgDim: 50, banners: true, sound: true, openOnStart: false, fadeLantern: true
 };
 const WB_STATE = {
   days: {}, target: null, win: [], processed: null, streak: 0, bestStreak: 0, restUsed: [], earned: {},
-  bonuses: {}, startHere: null, crumbs: 0, flags: {}, ease: false, shown: {}, seeded: false
+  bonuses: {}, startHere: null, crumbs: 0, flags: {}, ease: false, shown: {}, seeded: false, done: null
 };
 const WB_DEPTH = 3;
 const WB_REST_CAP = 5;
@@ -329,6 +329,7 @@ class WBView extends ItemView {
     const bg = this.unlocked('bg').includes(s.bg) ? s.bg : 'none';
     for (const k of ['aurora', 'dusk', 'north']) host.toggleClass('wb-bg-' + k, bg === k);
     host.toggleClass('wb-bg-host', bg !== 'none');
+    host.toggleClass('wb-fade-lantern', s.fadeLantern !== false);
     host.setCssProps({ '--wb-dim': String(s.bgDim / 100), '--wb-glow': String(s.bgGlow / 100) });
     const ring = WB_RINGS[this.unlocked('ring').includes(s.ring) ? s.ring : 'default'];
     host.setCssProps({ '--wb-r1': ring[1], '--wb-r2': ring[2] });
@@ -396,16 +397,18 @@ class WBView extends ItemView {
     this.r.lvlD = lv.createDiv({ cls: 'wb-lvl-d' });
     this.r.mini = lv.createDiv({ cls: 'wb-mini' });
 
-    const box = this.r.box = card.createEl('textarea', { cls: 'wb-box', attr: { placeholder: `Just write. No prompt, no rules. It saves into today's daily note under "${p.set.heading}".` } });
-    box.value = await this.loadSection();
-    box.addEventListener('input', () => this.typed());
+    // what's already finished today sits above the box, read-only; "Write more" opens a fresh box under it
+    this.r.page = card.createDiv({ cls: 'wb-page' });
+    await this.paintBox(await this.loadSection());
     this.r.bar = card.createDiv({ cls: 'wb-bar' }).createEl('i');
     this.r.bonus = card.createDiv({ cls: 'wb-bonus' });
     const row = card.createDiv({ cls: 'wb-row' });
     this.r.near = row.createSpan();
     row.createSpan({ cls: 'wb-sp' });
     this.r.saved = row.createSpan({ cls: 'wb-small' });
-    row.createEl('button', { text: 'Finish for today', cls: 'mod-cta' }).onclick = () => new WBFinishModal(this.app, p).open();
+    this.r.finish = row.createEl('button', { cls: 'mod-cta' });
+    this.r.finish.onclick = () => this.r.box ? this.finish() : this.writeMore();
+    this.paintFinish();
 
     // achievements card
     this.r.achCard = right.createDiv({ cls: 'wb-card' });
@@ -432,18 +435,64 @@ class WBView extends ItemView {
     return wbSplit(await this.app.vault.read(f), p.set.heading).body;
   }
 
+  // today's finished writing (from "Finish for today"), if any
+  doneText() { const x = this.plugin.d.done; return x && x.date === wbKey(this.plugin.today()) ? x.text : ''; }
+  // split the writing section into the finished part and the part still being written
+  splitDone(body) {
+    const done = this.doneText();
+    if (!done) return { done: '', draft: body };
+    const b = body.replace(/\s+$/, '');
+    if (b.startsWith(done)) return { done, draft: b.slice(done.length).replace(/^\n+/, '') };
+    // changed in the note itself: everything there now counts as finished
+    this.plugin.d.done.text = b; this.plugin.save();
+    return { done: b, draft: '' };
+  }
+  async paintBox(body) {
+    const p = this.plugin, pg = this.r.page, { done, draft } = this.splitDone(body);
+    pg.empty(); this.r.box = null;
+    const open = !done || this.more || !!draft;
+    if (done) {
+      const c = pg.createDiv({ cls: 'wb-done' + (open ? ' is-more' : '') });
+      c.createDiv({ cls: 'wb-done-h', text: open ? 'Finished earlier today' : '✓ Finished for today · saved in your daily note' });
+      c.createDiv({ cls: 'wb-done-t', text: done });
+    }
+    if (open) {
+      const box = this.r.box = pg.createEl('textarea', { cls: 'wb-box', attr: { placeholder: done ? 'Carry on. This goes under what you finished earlier.' : `Just write. No prompt, no rules. It saves into today's daily note under "${p.set.heading}".` } });
+      box.value = draft;
+      box.addEventListener('input', () => this.typed());
+    }
+    this.lastBox = null; this.other = null;
+    this.paintFinish();
+  }
+  paintFinish() { if (this.r.finish) this.r.finish.setText(this.r.box ? 'Finish for today' : 'Write more'); }
+  writeMore() { this.more = true; this.paintBox(this.doneText()).then(() => { this.update(); this.r.box && this.r.box.focus(); }); }
+  async finish() {
+    const p = this.plugin;
+    clearTimeout(this.saveT); await this.flush();
+    const text = this.fullText().replace(/\s+$/, '');
+    if (text) { p.d.done = { date: wbKey(p.today()), text }; p.save(); }
+    this.more = false;
+    await this.paintBox(await this.loadSection());
+    this.update();
+    new WBFinishModal(this.app, p).open();
+  }
+  fullText() {
+    const done = this.doneText(), draft = this.r.box ? this.r.box.value.replace(/\s+$/, '') : '';
+    return done && draft ? done + '\n\n' + draft : done || draft;
+  }
+
   // today's note was changed somewhere else: pick that up, unless you're typing here
   async reloadBox() {
     this.other = null;
-    if (!this.r.box || document.activeElement === this.r.box || this.pending) return;
-    this.r.box.value = await this.loadSection();
+    if (!this.r.page || (this.r.box && document.activeElement === this.r.box) || this.pending) return;
+    await this.paintBox(await this.loadSection());
   }
 
   // typing: count live, save a moment after you pause
   typed() {
     const p = this.plugin, rec = p.todayRec(), before = rec.w;
     const words = wbCount(this.r.box.value);
-    if (p.set.counts === 'section') rec.w = words;
+    if (p.set.counts === 'section') rec.w = wbCount(this.fullText());
     else rec.w = Math.max(0, (this.other == null ? (this.other = Math.max(0, before - (this.lastBox || 0))) : this.other) + words);
     this.lastBox = words;
     p.noteFirst(before);
@@ -455,7 +504,7 @@ class WBView extends ItemView {
   async flush() {
     this.pending = false;
     if (!this.r.box) return;
-    await this.plugin.writeSection(this.r.box.value);
+    await this.plugin.writeSection(this.fullText());
     if (this.r.saved) this.r.saved.setText('Saved ' + window.moment().format('HH:mm'));
   }
 
@@ -463,7 +512,7 @@ class WBView extends ItemView {
   update() {
     const p = this.plugin, d = p.d, r = this.r, rec = p.todayRec();
     if (!r.wc) return;
-    if (this.other == null && r.box) { this.lastBox = wbCount(r.box.value); if (p.set.counts !== 'section') this.other = Math.max(0, rec.w - this.lastBox); }
+    if (this.other == null) { this.lastBox = r.box ? wbCount(r.box.value) : 0; if (p.set.counts !== 'section') this.other = Math.max(0, rec.w - this.lastBox); }
     const w = rec.w, t = d.target, pr = Math.min(1, w / t);
     r.wc.setText(wbFmt(w)); r.of.setText('of ' + wbFmt(t));
     r.arc.setAttribute('stroke-dashoffset', String(213.6 * (1 - pr)));
@@ -689,6 +738,7 @@ class WBFinishModal extends Modal {
     this.setTitle('Nice work. Where will you start tomorrow?');
     c.createEl('p', { cls: 'wb-small', text: "One line, so tomorrow you don't face a blank page. It shows at the top of the board." });
     const inp = c.createEl('input', { cls: 'wb-next', attr: { type: 'text', placeholder: 'e.g. The letter is from her brother, not her husband.' } });
+    if (p.d.startHere && p.d.startHere.date === wbKey(p.today())) inp.value = p.d.startHere.text;
     const row = c.createDiv({ cls: 'modal-button-container' });
     row.createEl('button', { text: 'Skip' }).onclick = () => this.close();
     const ok = row.createEl('button', { text: 'Save', cls: 'mod-cta' });
@@ -719,6 +769,8 @@ class WBSettings extends PluginSettingTab {
     const re = async () => { p.idx = null; p.d.days = {}; p.d.processed = null; p.d.streak = 0; p.d.win = []; await p.saveNow(); await p.rescan(); };
 
     new Setting(el).setName('Open when Obsidian starts').addToggle(t => t.setValue(s.openOnStart).onChange(v => { s.openOnStart = v; p.save(); }));
+    new Setting(el).setName('Fade the rest during Lantern Focus').setDesc('While a Lantern Focus session is running, everything but Today\'s writing fades back. Hover to bring it back.')
+      .addToggle(t => t.setValue(s.fadeLantern !== false).onChange(v => { s.fadeLantern = v; p.save(); p.redraw(); }));
     new Setting(el).setName('Your name').setDesc('Shown on the board with your title, for example "Sam, the Steadfast". Optional.')
       .addText(t => t.setValue(s.name).onChange(v => { s.name = v.trim(); p.save(); p.redraw(); }));
 

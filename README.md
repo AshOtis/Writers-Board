@@ -9,6 +9,7 @@ A daily writing box with a target that grows as you do, a forgiving streak, and 
 Open the board from the ribbon (the pen icon) or the command **Writers Board: Open the board**, and just write. No prompt, no rules. What you write is saved into today's daily note under a `## Writing` heading, as plain Markdown.
 
 - **A target that grows.** You start at 100 words a day. Hit your target on 5 of your last 7 writing days and it steps up by 50, up to a ceiling you choose. It never drops on its own. After a hard week it asks whether you'd like to stay where you are or ease back.
+- **Finish for today.** Press it and today's writing is kept in your daily note and locked on the board, so you can't fiddle with it. Want to add more? **Write more** opens a fresh box under what you finished.
 - **"Tomorrow, start here".** When you finish, leave yourself one line about where to pick up. It waits at the top of the board next time, so you never start from a blank page.
 - **Daily bonuses.** Small extra goals each day (beat yesterday, write before 9am, go 25% over target) and a weekly one (write on 5 days).
 
@@ -36,7 +37,7 @@ Your streak counts the days in a row you've written. Rest days, earned from achi
 
 ## Works with
 
-- **[Lantern Focus](https://github.com/AshOtis/lantern-focus):** its "Focused 25 min" lines in your daily notes count as Lantern sessions and hours of focus.
+- **[Lantern Focus](https://github.com/AshOtis/lantern-focus):** its "Focused 25 min" lines in your daily notes count as Lantern sessions and hours of focus, and while a session runs everything but Today's writing fades back (switch it off in settings).
 - **[Static Aurora](https://github.com/AshOtis/aurora-theme):** choose the Static Aurora background and the board glows in the theme's live colours.
 - **[Daily Board](https://github.com/AshOtis/Daily-Board)** and **[One Page](https://github.com/AshOtis/One-Page):** they read and write the same daily notes.
 
