@@ -9,7 +9,7 @@ const WB_SET = {
 };
 const WB_STATE = {
   days: {}, target: null, win: [], processed: null, streak: 0, bestStreak: 0, restUsed: [], earned: {},
-  bonuses: {}, startHere: null, crumbs: 0, flags: {}, ease: false, shown: {}, seeded: false, done: null
+  bonuses: {}, startHere: null, crumbs: 0, flags: {}, ease: false, shown: {}, seeded: false, done: null, draft: null, board: {}, v2: false
 };
 const WB_DEPTH = 3;
 const WB_REST_CAP = 5;
@@ -37,6 +37,8 @@ class WritersBoard extends Plugin {
     this.registerInterval(window.setInterval(() => this.tick(), 60 * 1000));   // a new day while Obsidian is open
 
     this.app.workspace.onLayoutReady(async () => {
+      await this.adoptToday();
+      await this.commitStale();
       await this.rescan(true);
       if (this.set.openOnStart) this.open();
     });
@@ -86,11 +88,14 @@ class WritersBoard extends Plugin {
 
   /* ---------- reading the history ---------- */
   async readDay(date) {
-    const f = this.file(date), k = wbKey(date);
-    if (!f) { if (this.d.days[k]) { this.d.days[k].w = 0; this.d.days[k].f = 0; this.d.days[k].s = 0; } return null; }
-    const r = wbRead(await this.app.vault.cachedRead(f), this.set);
+    const k = wbKey(date), f = this.file(date), board = this.d.board[k];
+    // Words written in the board are counted from the board, never from the note. Only older days are read from the note.
+    const own = board != null || k === wbKey(this.today());
+    if (!f && !own) { if (this.d.days[k]) { this.d.days[k].w = 0; this.d.days[k].f = 0; this.d.days[k].s = 0; } return null; }
+    const r = f ? wbRead(await this.app.vault.cachedRead(f), this.set) : null;
     const rec = this.d.days[k] || (this.d.days[k] = {});
-    rec.w = r.words; rec.f = r.focus; rec.s = r.sessions;
+    rec.w = own ? (board || 0) : r.words;
+    rec.f = r ? r.focus : 0; rec.s = r ? r.sessions : 0;
     return r;
   }
 
@@ -130,9 +135,15 @@ class WritersBoard extends Plugin {
     }, 600);
   }
 
-  tick() {
+  async tick() {
     const k = wbKey(this.today());
-    if (this.lastDay && this.lastDay !== k) { this.process(); this.check(false); this.save(); this.redraw(); }
+    if (this.lastDay && this.lastDay !== k) {
+      // the day ended: whatever is still a draft goes into that day's note
+      for (const v of this.views()) if (v.pending) { clearTimeout(v.saveT); await v.flush(); }
+      await this.commitStale();
+      this.process(); this.check(false); this.save();
+      this.views().forEach(v => v.render(true));
+    }
     this.lastDay = k;
   }
 
@@ -275,8 +286,8 @@ class WritersBoard extends Plugin {
   }
 
   /* ---------- writing into today's note ---------- */
-  async todayFile(create) {
-    const t = this.today();
+  todayFile(create) { return this.dayFile(this.today(), create); }
+  async dayFile(t, create) {
     let f = this.file(t);
     if (f || !create) return f;
     const cfg = this.cfg(), path = wbPath(cfg, t);
@@ -295,8 +306,8 @@ class WritersBoard extends Plugin {
     this.selfSave = Date.now();
     return this.app.vault.create(path, text);
   }
-  async writeSection(body) {
-    const f = await this.todayFile(true), h = this.set.heading;
+  async writeSection(body, date) {
+    const f = await this.dayFile(date || this.today(), true), h = this.set.heading;
     this.selfSave = Date.now();
     await this.app.vault.process(f, text => {
       const sec = wbSplit(text, h);
@@ -304,6 +315,33 @@ class WritersBoard extends Plugin {
       if (!sec.found) { const head = text.replace(/\s*$/, ''); return (head ? head + '\n\n' : '') + `## ${h}\n\n` + block; }
       return sec.before + '\n\n' + block + (sec.after ? '\n' + sec.after.replace(/^\n+/, '') : '');
     });
+  }
+
+  // Update from 1.1: the text already in today's note becomes the board's own text, so counting is independent of the note from now on
+  async adoptToday() {
+    const d = this.d; if (d.v2) return;
+    d.v2 = true;
+    const k = wbKey(this.today()), f = await this.todayFile(false);
+    let body = f ? wbSplit(await this.app.vault.read(f), this.set.heading).body.replace(/\s+$/, '') : '';
+    let done = d.done && d.done.date === k ? d.done.text : '';
+    if (done) { if (body.startsWith(done)) body = body.slice(done.length).replace(/^\n+/, ''); else { done = body; d.done.text = body; body = ''; } }
+    d.draft = { date: k, text: body };
+    d.board[k] = wbCount(done && body ? done + '\n\n' + body : done || body);
+    this.save();
+  }
+
+  // A draft left from an earlier day is added to that day's note now
+  async commitStale() {
+    const d = this.d, dr = d.draft;
+    if (!dr || dr.date >= wbKey(this.today())) return;
+    const done = d.done && d.done.date === dr.date ? d.done.text : '', draft = String(dr.text || '').replace(/\s+$/, '');
+    const text = done && draft ? done + '\n\n' + draft : done || draft;
+    try {
+      if (text) await this.writeSection(text, wbFromKey(dr.date));
+      d.board[dr.date] = wbCount(text);
+      d.draft = null;
+      this.save();
+    } catch (e) { console.error('Writers Board: could not add the draft to the note', e); }
   }
 }
 
@@ -322,7 +360,7 @@ class WBView extends ItemView {
   getDisplayText() { return 'Writers Board'; }
   getIcon() { return 'pen-line'; }
   async onOpen() { this.render(); }
-  async onClose() { if (this.pending) { clearTimeout(this.saveT); await this.flush(); } }
+  async onClose() { if (this.pending) { clearTimeout(this.saveT); await this.flush(); await this.plugin.saveNow(); } }
 
   paintBackground() {
     const host = this.containerEl, s = this.plugin.set;
@@ -336,11 +374,11 @@ class WBView extends ItemView {
   }
   unlocked(kind) { return wbUnlocked(this.plugin, kind); }
 
-  async render() {
+  async render(force) {
     const p = this.plugin, d = p.d, el = this.contentEl;
     this.paintBackground();
     const focused = this.r.box && document.activeElement === this.r.box;
-    if (focused) { this.update(); return; }        // never pull the page out from under your typing
+    if (focused && !force) { this.update(); return; }        // never pull the page out from under your typing
     el.empty(); el.addClass('wb');
     this.r = {};
     const wrap = el.createDiv({ cls: 'wb-wrap' });
@@ -397,9 +435,10 @@ class WBView extends ItemView {
     this.r.lvlD = lv.createDiv({ cls: 'wb-lvl-d' });
     this.r.mini = lv.createDiv({ cls: 'wb-mini' });
 
-    // what's already finished today sits above the box, read-only; "Write more" opens a fresh box under it
+    // what's already finished today sits above the box, read-only; "Write more" opens a fresh box under it.
+    // Everything here is kept in the plugin's own data and only goes into the daily note on "Finish for today" or when the day ends.
     this.r.page = card.createDiv({ cls: 'wb-page' });
-    await this.paintBox(await this.loadSection());
+    await this.paintBox();
     this.r.bar = card.createDiv({ cls: 'wb-bar' }).createEl('i');
     this.r.bonus = card.createDiv({ cls: 'wb-bonus' });
     const row = card.createDiv({ cls: 'wb-row' });
@@ -429,50 +468,41 @@ class WBView extends ItemView {
     this.update();
   }
 
-  async loadSection() {
-    const p = this.plugin, f = await p.todayFile(false);
-    if (!f) return '';
-    return wbSplit(await this.app.vault.read(f), p.set.heading).body;
-  }
-
-  // today's finished writing (from "Finish for today"), if any
+  // today's text lives on the board (the plugin's own data), not in the daily note
   doneText() { const x = this.plugin.d.done; return x && x.date === wbKey(this.plugin.today()) ? x.text : ''; }
-  // split the writing section into the finished part and the part still being written
-  splitDone(body) {
-    const done = this.doneText();
-    if (!done) return { done: '', draft: body };
-    const b = body.replace(/\s+$/, '');
-    if (b.startsWith(done)) return { done, draft: b.slice(done.length).replace(/^\n+/, '') };
-    // changed in the note itself: everything there now counts as finished
-    this.plugin.d.done.text = b; this.plugin.save();
-    return { done: b, draft: '' };
-  }
-  async paintBox(body) {
-    const p = this.plugin, pg = this.r.page, { done, draft } = this.splitDone(body);
-    pg.empty(); this.r.box = null;
+  draftText() { const x = this.plugin.d.draft; return x && x.date === wbKey(this.plugin.today()) ? x.text : ''; }
+  async paintBox() {
+    const p = this.plugin, pg = this.r.page, done = this.doneText(), draft = this.draftText();
+    pg.empty(); this.r.box = null; this.boxDate = wbKey(p.today());
     const open = !done || this.more || !!draft;
     if (done) {
       const c = pg.createDiv({ cls: 'wb-done' + (open ? ' is-more' : '') });
-      c.createDiv({ cls: 'wb-done-h', text: open ? 'Finished earlier today' : '✓ Finished for today · saved in your daily note' });
+      c.createDiv({ cls: 'wb-done-h', text: open ? 'Finished earlier today' : '✓ Finished for today · added to your daily note' });
       c.createDiv({ cls: 'wb-done-t', text: done });
     }
     if (open) {
-      const box = this.r.box = pg.createEl('textarea', { cls: 'wb-box', attr: { placeholder: done ? 'Carry on. This goes under what you finished earlier.' : `Just write. No prompt, no rules. It saves into today's daily note under "${p.set.heading}".` } });
+      const box = this.r.box = pg.createEl('textarea', { cls: 'wb-box', attr: { placeholder: done ? 'Carry on. This goes under what you finished earlier.' : `Just write. No prompt, no rules. It goes into today's daily note under "${p.set.heading}" when you press Finish for today, or when the day ends.` } });
       box.value = draft;
       box.addEventListener('input', () => this.typed());
     }
-    this.lastBox = null; this.other = null;
     this.paintFinish();
   }
   paintFinish() { if (this.r.finish) this.r.finish.setText(this.r.box ? 'Finish for today' : 'Write more'); }
-  writeMore() { this.more = true; this.paintBox(this.doneText()).then(() => { this.update(); this.r.box && this.r.box.focus(); }); }
+  writeMore() { this.more = true; this.paintBox().then(() => { this.update(); this.r.box && this.r.box.focus(); }); }
   async finish() {
     const p = this.plugin;
     clearTimeout(this.saveT); await this.flush();
-    const text = this.fullText().replace(/\s+$/, '');
-    if (text) { p.d.done = { date: wbKey(p.today()), text }; p.save(); }
+    const text = this.fullText().replace(/\s+$/, ''), key = wbKey(p.today());
+    if (text) {
+      p.d.done = { date: key, text };
+      p.d.board[key] = wbCount(text);
+      p.d.draft = { date: key, text: '' };
+      await p.writeSection(text);          // the only place today's writing goes into the daily note
+      p.save();
+      if (this.r.saved) this.r.saved.setText('Added to your daily note ' + window.moment().format('HH:mm'));
+    }
     this.more = false;
-    await this.paintBox(await this.loadSection());
+    await this.paintBox();
     this.update();
     new WBFinishModal(this.app, p).open();
   }
@@ -481,20 +511,14 @@ class WBView extends ItemView {
     return done && draft ? done + '\n\n' + draft : done || draft;
   }
 
-  // today's note was changed somewhere else: pick that up, unless you're typing here
-  async reloadBox() {
-    this.other = null;
-    if (!this.r.page || (this.r.box && document.activeElement === this.r.box) || this.pending) return;
-    await this.paintBox(await this.loadSection());
-  }
+  // the daily note changed somewhere else: nothing to pick up, the board's words don't come from it
+  async reloadBox() { this.update(); }
 
-  // typing: count live, save a moment after you pause
+  // typing: count live, keep the draft a moment after you pause (in the plugin's data, not the note)
   typed() {
     const p = this.plugin, rec = p.todayRec(), before = rec.w;
-    const words = wbCount(this.r.box.value);
-    if (p.set.counts === 'section') rec.w = wbCount(this.fullText());
-    else rec.w = Math.max(0, (this.other == null ? (this.other = Math.max(0, before - (this.lastBox || 0))) : this.other) + words);
-    this.lastBox = words;
+    rec.w = wbCount(this.fullText());
+    p.d.board[wbKey(p.today())] = rec.w;
     p.noteFirst(before);
     this.pending = true;
     clearTimeout(this.saveT);
@@ -504,15 +528,16 @@ class WBView extends ItemView {
   async flush() {
     this.pending = false;
     if (!this.r.box) return;
-    await this.plugin.writeSection(this.fullText());
-    if (this.r.saved) this.r.saved.setText('Saved ' + window.moment().format('HH:mm'));
+    const p = this.plugin;
+    p.d.draft = { date: this.boxDate || wbKey(p.today()), text: this.r.box.value };
+    p.save();
+    if (this.r.saved) this.r.saved.setText('Draft kept ' + window.moment().format('HH:mm'));
   }
 
   // refresh the numbers without rebuilding (keeps your cursor where it is)
   update() {
     const p = this.plugin, d = p.d, r = this.r, rec = p.todayRec();
     if (!r.wc) return;
-    if (this.other == null) { this.lastBox = r.box ? wbCount(r.box.value) : 0; if (p.set.counts !== 'section') this.other = Math.max(0, rec.w - this.lastBox); }
     const w = rec.w, t = d.target, pr = Math.min(1, w / t);
     r.wc.setText(wbFmt(w)); r.of.setText('of ' + wbFmt(t));
     r.arc.setAttribute('stroke-dashoffset', String(213.6 * (1 - pr)));
@@ -784,9 +809,9 @@ class WBSettings extends PluginSettingTab {
     }
     new Setting(el).setName('Include subfolders').setDesc('Also find daily notes in folders inside the daily notes folder, such as an Archive (up to 3 folders deep).')
       .addToggle(t => t.setValue(s.subfolders).onChange(v => { s.subfolders = v; p.save(); }));
-    new Setting(el).setName('What counts as writing').setDesc('The whole note (without headings, tasks and focus logs), or only what you write under the writing heading.')
+    new Setting(el).setName('What counts as writing').setDesc('Words you write in the board are counted from the board itself and never from your daily note. This is only for older days: the whole note (without headings, tasks and focus logs, or just the writing section if the note has one), or only the writing section.')
       .addDropdown(d => d.addOptions({ note: 'The whole daily note', section: 'Only the writing section' }).setValue(s.counts).onChange(v => { s.counts = v; p.save(); }));
-    new Setting(el).setName('Writing heading').setDesc('The writing box saves under this heading in today\'s note.')
+    new Setting(el).setName('Writing heading').setDesc('Your writing is added to today\'s note under this heading when you press Finish for today, or when the day ends.')
       .addText(t => t.setValue(s.heading).onChange(v => { s.heading = v.trim() || 'Writing'; p.save(); }));
     new Setting(el).setName('Read my daily notes again').setDesc('After changing the settings above, count your history again. Achievements you have earned are kept.')
       .addButton(b => b.setButtonText('Recount').onClick(async () => { b.setDisabled(true); await re(); b.setDisabled(false); new Notice('Writers Board: recounted.'); }));

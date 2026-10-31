@@ -42,7 +42,8 @@ function wbRead(text, s) {
   for (const m of body.matchAll(/Focused (\d+) min/g)) { focus += Number(m[1]); sessions++; }
   const sec = wbSplit(body, s.heading);
   let words;
-  if (s.counts === 'section') words = wbCount(sec.body);
+  // older days: if the note has a writing section with text in it, that is what counts
+  if (s.counts === 'section' || (sec.found && sec.body.trim())) words = wbCount(sec.body);
   else {
     // the whole note, without headings, tasks, focus logs, code and embeds
     const clean = body.replace(/```[\s\S]*?```/g, '').split('\n')
